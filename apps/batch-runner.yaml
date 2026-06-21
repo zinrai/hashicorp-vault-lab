@@ -1,0 +1,9 @@
+name: batch-runner
+log_interval: 30s
+db:
+  - name: main
+    host: postgres-main
+    creds_file: /secrets/db-main.json
+  - name: analytics
+    host: postgres-analytics
+    creds_file: /secrets/db-analytics.json

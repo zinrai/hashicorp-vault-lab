@@ -1,0 +1,9 @@
+name: auth-service
+log_interval: 30s
+kv:
+  - name: jwt-key
+    file: /secrets/kv-jwt-key.json
+db:
+  - name: main
+    host: postgres-main
+    creds_file: /secrets/db-main.json

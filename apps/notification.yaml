@@ -1,0 +1,7 @@
+name: notification
+log_interval: 30s
+kv:
+  - name: sendgrid
+    file: /secrets/kv-sendgrid.json
+  - name: webhook
+    file: /secrets/kv-webhook.json

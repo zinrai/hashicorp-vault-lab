@@ -1,0 +1,9 @@
+name: internal-cms
+log_interval: 30s
+kv:
+  - name: config
+    file: /secrets/kv-config.json
+db:
+  - name: internal
+    host: postgres-internal
+    creds_file: /secrets/db-internal.json

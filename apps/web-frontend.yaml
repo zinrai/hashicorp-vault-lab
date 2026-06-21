@@ -1,0 +1,9 @@
+name: web-frontend
+log_interval: 30s
+kv:
+  - name: config
+    file: /secrets/kv-config.json
+db:
+  - name: main
+    host: postgres-main
+    creds_file: /secrets/db-main.json

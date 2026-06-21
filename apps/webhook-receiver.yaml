@@ -1,0 +1,9 @@
+name: webhook-receiver
+log_interval: 30s
+kv:
+  - name: secret
+    file: /secrets/kv-secret.json
+db:
+  - name: main
+    host: postgres-main
+    creds_file: /secrets/db-main.json

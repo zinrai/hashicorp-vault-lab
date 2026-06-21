@@ -1,0 +1,455 @@
+x-agent-base: &agent-base
+  image: hashicorp/vault:2.0.2
+  user: "0:0"
+  environment:
+    VAULT_ADDR: https://vault:8200
+    VAULT_CACERT: /vault-tls/vault-ca.pem
+    VAULT_TLS_SERVER_NAME: localhost
+  entrypoint: ["/bin/sh", "/etc/vault-agent/entrypoint.sh"]
+  tmpfs:
+    - /vault-creds:size=1m
+  depends_on:
+    vault-init:
+      condition: service_completed_successfully
+
+x-app-base: &app-base
+  image: vault-lab-app:latest
+  build:
+    context: ./app
+
+services:
+  vault:
+    image: hashicorp/vault:2.0.2
+    container_name: vault
+    user: "0:0"
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: https://127.0.0.1:8200
+      VAULT_CACERT: /vault/tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    ports:
+      - "8200:8200"
+    volumes:
+      - vault-tls:/vault/tls
+      - vault-audit:/vault/logs
+    # Bypass docker-entrypoint.sh: it drops to user `vault` via su-exec,
+    # which can't remove pre-existing files in /vault/tls during dev-tls
+    # bootstrap (the tls dir is shared with other containers and ends up
+    # owned by root). We already have IPC_LOCK via cap_add, so setcap is
+    # unnecessary; run vault directly as root.
+    entrypoint: ["vault"]
+    command: ["server", "-dev", "-dev-tls", "-dev-tls-cert-dir=/vault/tls"]
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  local-idp:
+    image: siocode/local-idp:latest
+    container_name: local-idp
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./local-idp/config.yaml:/config.yaml:ro
+
+  postgres-main:
+    image: postgres:18.4-trixie
+    container_name: postgres-main
+    environment:
+      POSTGRES_USER: vault-admin
+      POSTGRES_PASSWORD: adminpass
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault-admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-payment:
+    image: postgres:18.4-trixie
+    container_name: postgres-payment
+    environment:
+      POSTGRES_USER: vault-admin
+      POSTGRES_PASSWORD: adminpass
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault-admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-analytics:
+    image: postgres:18.4-trixie
+    container_name: postgres-analytics
+    environment:
+      POSTGRES_USER: vault-admin
+      POSTGRES_PASSWORD: adminpass
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault-admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres-internal:
+    image: postgres:18.4-trixie
+    container_name: postgres-internal
+    environment:
+      POSTGRES_USER: vault-admin
+      POSTGRES_PASSWORD: adminpass
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault-admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:2.0.2
+    container_name: vault-init
+    user: "0:0"
+    depends_on:
+      vault:
+        condition: service_healthy
+      local-idp:
+        condition: service_started
+      postgres-main:
+        condition: service_healthy
+      postgres-payment:
+        condition: service_healthy
+      postgres-analytics:
+        condition: service_healthy
+      postgres-internal:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+      VAULT_TOKEN: root
+    volumes:
+      - ./vault-init:/init:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap
+    entrypoint: ["/bin/sh", "/init/init.sh"]
+    restart: "no"
+
+  app-web-frontend-agent:
+    <<: *agent-base
+    container_name: app-web-frontend-agent
+    environment:
+      APP_NAME: web-frontend
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/web-frontend.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - web-frontend-rendered:/vault/file
+
+  app-web-frontend:
+    <<: *app-base
+    container_name: app-web-frontend
+    depends_on:
+      app-web-frontend-agent:
+        condition: service_started
+    volumes:
+      - ./apps/web-frontend.yaml:/etc/app/config.yaml:ro
+      - web-frontend-rendered:/secrets:ro
+
+  app-api-server-agent:
+    <<: *agent-base
+    container_name: app-api-server-agent
+    environment:
+      APP_NAME: api-server
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/api-server.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - api-server-rendered:/vault/file
+
+  app-api-server:
+    <<: *app-base
+    container_name: app-api-server
+    depends_on:
+      app-api-server-agent:
+        condition: service_started
+    volumes:
+      - ./apps/api-server.yaml:/etc/app/config.yaml:ro
+      - api-server-rendered:/secrets:ro
+
+  app-admin-panel-agent:
+    <<: *agent-base
+    container_name: app-admin-panel-agent
+    environment:
+      APP_NAME: admin-panel
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/admin-panel.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - admin-panel-rendered:/vault/file
+
+  app-admin-panel:
+    <<: *app-base
+    container_name: app-admin-panel
+    depends_on:
+      app-admin-panel-agent:
+        condition: service_started
+    volumes:
+      - ./apps/admin-panel.yaml:/etc/app/config.yaml:ro
+      - admin-panel-rendered:/secrets:ro
+
+  app-auth-service-agent:
+    <<: *agent-base
+    container_name: app-auth-service-agent
+    environment:
+      APP_NAME: auth-service
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/auth-service.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - auth-service-rendered:/vault/file
+
+  app-auth-service:
+    <<: *app-base
+    container_name: app-auth-service
+    depends_on:
+      app-auth-service-agent:
+        condition: service_started
+    volumes:
+      - ./apps/auth-service.yaml:/etc/app/config.yaml:ro
+      - auth-service-rendered:/secrets:ro
+
+  app-payment-agent:
+    <<: *agent-base
+    container_name: app-payment-agent
+    environment:
+      APP_NAME: payment
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/payment.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - payment-rendered:/vault/file
+
+  app-payment:
+    <<: *app-base
+    container_name: app-payment
+    depends_on:
+      app-payment-agent:
+        condition: service_started
+    volumes:
+      - ./apps/payment.yaml:/etc/app/config.yaml:ro
+      - payment-rendered:/secrets:ro
+
+  app-notification-agent:
+    <<: *agent-base
+    container_name: app-notification-agent
+    environment:
+      APP_NAME: notification
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/notification.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - notification-rendered:/vault/file
+
+  app-notification:
+    <<: *app-base
+    container_name: app-notification
+    depends_on:
+      app-notification-agent:
+        condition: service_started
+    volumes:
+      - ./apps/notification.yaml:/etc/app/config.yaml:ro
+      - notification-rendered:/secrets:ro
+
+  app-search-agent:
+    <<: *agent-base
+    container_name: app-search-agent
+    environment:
+      APP_NAME: search
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/search.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - search-rendered:/vault/file
+
+  app-search:
+    <<: *app-base
+    container_name: app-search
+    depends_on:
+      app-search-agent:
+        condition: service_started
+    volumes:
+      - ./apps/search.yaml:/etc/app/config.yaml:ro
+      - search-rendered:/secrets:ro
+
+  app-batch-runner-agent:
+    <<: *agent-base
+    container_name: app-batch-runner-agent
+    environment:
+      APP_NAME: batch-runner
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/batch-runner.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - batch-runner-rendered:/vault/file
+
+  app-batch-runner:
+    <<: *app-base
+    container_name: app-batch-runner
+    depends_on:
+      app-batch-runner-agent:
+        condition: service_started
+    volumes:
+      - ./apps/batch-runner.yaml:/etc/app/config.yaml:ro
+      - batch-runner-rendered:/secrets:ro
+
+  app-etl-agent:
+    <<: *agent-base
+    container_name: app-etl-agent
+    environment:
+      APP_NAME: etl
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/etl.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - etl-rendered:/vault/file
+
+  app-etl:
+    <<: *app-base
+    container_name: app-etl
+    depends_on:
+      app-etl-agent:
+        condition: service_started
+    volumes:
+      - ./apps/etl.yaml:/etc/app/config.yaml:ro
+      - etl-rendered:/secrets:ro
+
+  app-analytics-agent:
+    <<: *agent-base
+    container_name: app-analytics-agent
+    environment:
+      APP_NAME: analytics
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/analytics.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - analytics-rendered:/vault/file
+
+  app-analytics:
+    <<: *app-base
+    container_name: app-analytics
+    depends_on:
+      app-analytics-agent:
+        condition: service_started
+    volumes:
+      - ./apps/analytics.yaml:/etc/app/config.yaml:ro
+      - analytics-rendered:/secrets:ro
+
+  app-webhook-receiver-agent:
+    <<: *agent-base
+    container_name: app-webhook-receiver-agent
+    environment:
+      APP_NAME: webhook-receiver
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/webhook-receiver.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - webhook-receiver-rendered:/vault/file
+
+  app-webhook-receiver:
+    <<: *app-base
+    container_name: app-webhook-receiver
+    depends_on:
+      app-webhook-receiver-agent:
+        condition: service_started
+    volumes:
+      - ./apps/webhook-receiver.yaml:/etc/app/config.yaml:ro
+      - webhook-receiver-rendered:/secrets:ro
+
+  app-internal-cms-agent:
+    <<: *agent-base
+    container_name: app-internal-cms-agent
+    environment:
+      APP_NAME: internal-cms
+      VAULT_ADDR: https://vault:8200
+      VAULT_CACERT: /vault-tls/vault-ca.pem
+      VAULT_TLS_SERVER_NAME: localhost
+    volumes:
+      - ./vault-agent-configs/entrypoint.sh:/etc/vault-agent/entrypoint.sh:ro
+      - ./vault-agent-configs/internal-cms.hcl:/etc/vault-agent/config.hcl:ro
+      - vault-tls:/vault-tls:ro
+      - vault-bootstrap:/vault-bootstrap:ro
+      - internal-cms-rendered:/vault/file
+
+  app-internal-cms:
+    <<: *app-base
+    container_name: app-internal-cms
+    depends_on:
+      app-internal-cms-agent:
+        condition: service_started
+    volumes:
+      - ./apps/internal-cms.yaml:/etc/app/config.yaml:ro
+      - internal-cms-rendered:/secrets:ro
+
+volumes:
+  vault-tls:
+  vault-audit:
+  vault-bootstrap:
+  web-frontend-rendered:
+  api-server-rendered:
+  admin-panel-rendered:
+  auth-service-rendered:
+  payment-rendered:
+  notification-rendered:
+  search-rendered:
+  batch-runner-rendered:
+  etl-rendered:
+  analytics-rendered:
+  webhook-receiver-rendered:
+  internal-cms-rendered:

@@ -1,0 +1,6 @@
+name: search
+log_interval: 30s
+db:
+  - name: main
+    host: postgres-main
+    creds_file: /secrets/db-main.json

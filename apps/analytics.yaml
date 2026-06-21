@@ -1,0 +1,6 @@
+name: analytics
+log_interval: 30s
+db:
+  - name: analytics
+    host: postgres-analytics
+    creds_file: /secrets/db-analytics.json

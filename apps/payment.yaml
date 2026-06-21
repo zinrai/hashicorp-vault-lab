@@ -1,0 +1,9 @@
+name: payment
+log_interval: 30s
+kv:
+  - name: stripe
+    file: /secrets/kv-stripe.json
+db:
+  - name: payment
+    host: postgres-payment
+    creds_file: /secrets/db-payment.json

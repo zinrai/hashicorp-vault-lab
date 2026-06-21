@@ -1,0 +1,22 @@
+issuer: http://local-idp:8080
+
+users:
+  - username: sre
+    password: srepass
+    email: sre@example.local
+    name: SRE User
+  - username: developer
+    password: devpass
+    email: developer@example.local
+    name: Developer User
+
+clients:
+  - client_id: vault
+    client_secret: vault-secret
+    redirect_uris:
+      - http://localhost:8200/ui/vault/auth/oidc/oidc/callback
+      - http://localhost:8250/oidc/callback
+    scopes:
+      - openid
+      - email
+      - profile
