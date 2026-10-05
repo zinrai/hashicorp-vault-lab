@@ -1,0 +1,303 @@
+# The Vault from the environment, not defined here: the lab runs on a Vault
+# that runs elsewhere, named by VAULT_ADDR and VAULT_CACERT as for the vault
+# CLI. On its network, VAULT_NETWORK, not one of our own: the Vault nodes
+# reach the databases and the IdP by name. Agents and applications in a
+# profile, not started with the rest: they need the Vault configured and
+# their wrap tokens handed over first.
+
+x-postgres: &postgres
+  image: postgres:18.4-trixie
+  restart: unless-stopped
+  environment:
+    POSTGRES_USER: vault-admin
+    POSTGRES_PASSWORD: adminpass
+    POSTGRES_DB: postgres
+  networks: [vault]
+
+# Root, not the vault user: the agent writes the rendered files 0400 for the
+# application, which runs as root too (docs/OVERVIEW.md, simplifications).
+x-agent: &agent
+  image: hashicorp/vault:2.1.1
+  profiles: [apps]
+  user: "0:0"
+  entrypoint: ["/bin/sh", "/lab/vault-agent-configs/entrypoint.sh"]
+  environment:
+    VAULT_ADDR: ${VAULT_ADDR:?VAULT_ADDR is the Vault the lab runs on}
+    VAULT_CACERT: /vault-ca/ca.crt
+  tmpfs:
+    - /vault-creds:size=1m
+  networks: [vault]
+
+# One image for all twelve, built from app/: what each one is comes from
+# apps/<name>.yaml.
+x-app: &app
+  build: ./app
+  image: vault-lab-app
+  profiles: [apps]
+  user: "0:0"
+  networks: [vault]
+
+services:
+  # Published on the host's loopback, not only on the network: the browser
+  # of an OIDC login has to reach it as well as Vault.
+  local-idp:
+    image: ghcr.io/dexidp/dex:v2.45.1
+    container_name: local-idp
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "127.0.0.1:5556:5556"
+    volumes:
+      - ./local-idp/config.yaml:/etc/dex/config.yaml:ro
+    networks: [vault]
+
+  postgres-main:
+    <<: *postgres
+    container_name: postgres-main
+
+  postgres-payment:
+    <<: *postgres
+    container_name: postgres-payment
+
+  postgres-analytics:
+    <<: *postgres
+    container_name: postgres-analytics
+
+  postgres-internal:
+    <<: *postgres
+    container_name: postgres-internal
+
+  app-web-frontend-agent:
+    <<: *agent
+    container_name: app-web-frontend-agent
+    command: [web-frontend]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/web-frontend:/vault-bootstrap/web-frontend:ro
+      - web-frontend-rendered:/vault/file
+
+  app-web-frontend:
+    <<: *app
+    container_name: app-web-frontend
+    depends_on: [app-web-frontend-agent]
+    volumes:
+      - ./apps/web-frontend.yaml:/etc/app/config.yaml:ro
+      - web-frontend-rendered:/secrets:ro
+
+  app-api-server-agent:
+    <<: *agent
+    container_name: app-api-server-agent
+    command: [api-server]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/api-server:/vault-bootstrap/api-server:ro
+      - api-server-rendered:/vault/file
+
+  app-api-server:
+    <<: *app
+    container_name: app-api-server
+    depends_on: [app-api-server-agent]
+    volumes:
+      - ./apps/api-server.yaml:/etc/app/config.yaml:ro
+      - api-server-rendered:/secrets:ro
+
+  app-admin-panel-agent:
+    <<: *agent
+    container_name: app-admin-panel-agent
+    command: [admin-panel]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/admin-panel:/vault-bootstrap/admin-panel:ro
+      - admin-panel-rendered:/vault/file
+
+  app-admin-panel:
+    <<: *app
+    container_name: app-admin-panel
+    depends_on: [app-admin-panel-agent]
+    volumes:
+      - ./apps/admin-panel.yaml:/etc/app/config.yaml:ro
+      - admin-panel-rendered:/secrets:ro
+
+  app-auth-service-agent:
+    <<: *agent
+    container_name: app-auth-service-agent
+    command: [auth-service]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/auth-service:/vault-bootstrap/auth-service:ro
+      - auth-service-rendered:/vault/file
+
+  app-auth-service:
+    <<: *app
+    container_name: app-auth-service
+    depends_on: [app-auth-service-agent]
+    volumes:
+      - ./apps/auth-service.yaml:/etc/app/config.yaml:ro
+      - auth-service-rendered:/secrets:ro
+
+  app-payment-agent:
+    <<: *agent
+    container_name: app-payment-agent
+    command: [payment]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/payment:/vault-bootstrap/payment:ro
+      - payment-rendered:/vault/file
+
+  app-payment:
+    <<: *app
+    container_name: app-payment
+    depends_on: [app-payment-agent]
+    volumes:
+      - ./apps/payment.yaml:/etc/app/config.yaml:ro
+      - payment-rendered:/secrets:ro
+
+  app-notification-agent:
+    <<: *agent
+    container_name: app-notification-agent
+    command: [notification]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/notification:/vault-bootstrap/notification:ro
+      - notification-rendered:/vault/file
+
+  app-notification:
+    <<: *app
+    container_name: app-notification
+    depends_on: [app-notification-agent]
+    volumes:
+      - ./apps/notification.yaml:/etc/app/config.yaml:ro
+      - notification-rendered:/secrets:ro
+
+  app-search-agent:
+    <<: *agent
+    container_name: app-search-agent
+    command: [search]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/search:/vault-bootstrap/search:ro
+      - search-rendered:/vault/file
+
+  app-search:
+    <<: *app
+    container_name: app-search
+    depends_on: [app-search-agent]
+    volumes:
+      - ./apps/search.yaml:/etc/app/config.yaml:ro
+      - search-rendered:/secrets:ro
+
+  app-batch-runner-agent:
+    <<: *agent
+    container_name: app-batch-runner-agent
+    command: [batch-runner]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/batch-runner:/vault-bootstrap/batch-runner:ro
+      - batch-runner-rendered:/vault/file
+
+  app-batch-runner:
+    <<: *app
+    container_name: app-batch-runner
+    depends_on: [app-batch-runner-agent]
+    volumes:
+      - ./apps/batch-runner.yaml:/etc/app/config.yaml:ro
+      - batch-runner-rendered:/secrets:ro
+
+  app-etl-agent:
+    <<: *agent
+    container_name: app-etl-agent
+    command: [etl]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/etl:/vault-bootstrap/etl:ro
+      - etl-rendered:/vault/file
+
+  app-etl:
+    <<: *app
+    container_name: app-etl
+    depends_on: [app-etl-agent]
+    volumes:
+      - ./apps/etl.yaml:/etc/app/config.yaml:ro
+      - etl-rendered:/secrets:ro
+
+  app-analytics-agent:
+    <<: *agent
+    container_name: app-analytics-agent
+    command: [analytics]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/analytics:/vault-bootstrap/analytics:ro
+      - analytics-rendered:/vault/file
+
+  app-analytics:
+    <<: *app
+    container_name: app-analytics
+    depends_on: [app-analytics-agent]
+    volumes:
+      - ./apps/analytics.yaml:/etc/app/config.yaml:ro
+      - analytics-rendered:/secrets:ro
+
+  app-webhook-receiver-agent:
+    <<: *agent
+    container_name: app-webhook-receiver-agent
+    command: [webhook-receiver]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/webhook-receiver:/vault-bootstrap/webhook-receiver:ro
+      - webhook-receiver-rendered:/vault/file
+
+  app-webhook-receiver:
+    <<: *app
+    container_name: app-webhook-receiver
+    depends_on: [app-webhook-receiver-agent]
+    volumes:
+      - ./apps/webhook-receiver.yaml:/etc/app/config.yaml:ro
+      - webhook-receiver-rendered:/secrets:ro
+
+  app-internal-cms-agent:
+    <<: *agent
+    container_name: app-internal-cms-agent
+    command: [internal-cms]
+    volumes:
+      - ./vault-agent-configs:/lab/vault-agent-configs:ro
+      - ${VAULT_CACERT:?VAULT_CACERT is the CA of the Vault the lab runs on}:/vault-ca/ca.crt:ro
+      - ./bootstrap/internal-cms:/vault-bootstrap/internal-cms:ro
+      - internal-cms-rendered:/vault/file
+
+  app-internal-cms:
+    <<: *app
+    container_name: app-internal-cms
+    depends_on: [app-internal-cms-agent]
+    volumes:
+      - ./apps/internal-cms.yaml:/etc/app/config.yaml:ro
+      - internal-cms-rendered:/secrets:ro
+
+networks:
+  vault:
+    name: ${VAULT_NETWORK:?VAULT_NETWORK is the Docker network the Vault nodes are on}
+    external: true
+
+volumes:
+  web-frontend-rendered:
+  api-server-rendered:
+  admin-panel-rendered:
+  auth-service-rendered:
+  payment-rendered:
+  notification-rendered:
+  search-rendered:
+  batch-runner-rendered:
+  etl-rendered:
+  analytics-rendered:
+  webhook-receiver-rendered:
+  internal-cms-rendered:

@@ -1,6 +1,5 @@
-# auth-service.hcl
 
-path "secret/data/auth-service/*" {
+path "secret/data/webhook-receiver/*" {
   capabilities = ["read"]
 }
 

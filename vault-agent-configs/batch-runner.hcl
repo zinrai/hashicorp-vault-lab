@@ -1,11 +1,5 @@
 pid_file = "/tmp/pidfile"
 
-vault {
-  address         = "https://vault:8200"
-  ca_cert         = "/vault-tls/vault-ca.pem"
-  tls_server_name = "localhost"
-}
-
 auto_auth {
   method "approle" {
     config = {

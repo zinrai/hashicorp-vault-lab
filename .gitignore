@@ -1,0 +1,6 @@
+__pycache__
+
+/app/vault-lab-app
+
+# Not committed: the wrap tokens handed to agents.
+/bootstrap/

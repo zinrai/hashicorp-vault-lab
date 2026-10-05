@@ -1,4 +1,3 @@
-# internal-cms.hcl
 
 path "secret-internal/data/internal-cms/*" {
   capabilities = ["read"]

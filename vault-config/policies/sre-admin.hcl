@@ -15,7 +15,9 @@ path "sys/policies/acl/*" {
 }
 
 path "sys/audit" {
-  capabilities = ["read", "list"]
+  # sys/audit is root-protected, so sudo is required in addition to read.
+  # Without it `vault audit list` returns 403.
+  capabilities = ["read", "list", "sudo"]
 }
 
 path "sys/leases/lookup" {
@@ -23,7 +25,9 @@ path "sys/leases/lookup" {
 }
 
 path "sys/leases/lookup/+/+/*" {
-  capabilities = ["list"]
+  # LIST on sys/leases/lookup is root-protected, so sudo is required in
+  # addition to list. Without it every lease enumeration returns 403.
+  capabilities = ["list", "sudo"]
 }
 
 path "auth/approle/role" {
@@ -58,11 +62,21 @@ path "database/roles/*" {
   capabilities = ["read"]
 }
 
+# pki/+ stops at one segment, so it does not reach pki_int/roles/<name> or
+# pki/cert/<serial>. Both are read during normal inspection.
 path "pki/+" {
   capabilities = ["read", "list"]
 }
 
+path "pki/+/*" {
+  capabilities = ["read", "list"]
+}
+
 path "pki_int/+" {
+  capabilities = ["read", "list"]
+}
+
+path "pki_int/+/*" {
   capabilities = ["read", "list"]
 }
 

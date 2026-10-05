@@ -1,6 +1,5 @@
-# webhook-receiver.hcl
 
-path "secret/data/webhook-receiver/*" {
+path "secret/data/api-server/*" {
   capabilities = ["read"]
 }
 

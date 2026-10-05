@@ -1,41 +1,32 @@
 #!/bin/sh
-# Per-agent entrypoint: unwrap the response-wrapped role-id and secret-id
-# that vault-init wrote, then exec vault agent.
+# VAULT_ADDR and VAULT_CACERT from the deployment, not from <app>.hcl: where
+# Vault is depends on where the lab runs.
 #
-# Real-env analog: an orchestrator (Ansible/Nomad/K8s) hands a single-use
-# wrap token to the workload at deploy time; the workload unwraps once.
-# After the wrap_ttl expires (or after first use), restart of this container
-# requires re-running vault-init to issue a new wrap.
+# Once only, not on every start: a wrap token is single-use, so a restarted
+# agent fails until the deployment hands it new ones. Secret zero is the
+# orchestrator's to deliver again, not something to persist on disk.
 
 set -eu
 
-: "${APP_NAME:?APP_NAME is required}"
+APP_NAME=${1:?usage: entrypoint.sh <app>}
 : "${VAULT_ADDR:?VAULT_ADDR is required}"
 : "${VAULT_CACERT:?VAULT_CACERT is required}"
 
 WRAP_DIR="/vault-bootstrap/${APP_NAME}"
 CRED_DIR="/vault-creds"
-ROLE_WRAP="${WRAP_DIR}/role-id.wrap"
-SECRET_WRAP="${WRAP_DIR}/secret-id.wrap"
 
-if [ ! -f "${ROLE_WRAP}" ] || [ ! -f "${SECRET_WRAP}" ]; then
-  echo "[entrypoint] missing wrap tokens for ${APP_NAME} under ${WRAP_DIR}" >&2
-  exit 1
-fi
-
-mkdir -p "${CRED_DIR}"
-
-ROLE_TOKEN=$(cat "${ROLE_WRAP}")
-SECRET_TOKEN=$(cat "${SECRET_WRAP}")
+for f in role-id.wrap secret-id.wrap; do
+  if [ ! -f "${WRAP_DIR}/$f" ]; then
+    echo "[entrypoint] no ${WRAP_DIR}/$f: the deployment has not handed ${APP_NAME} its wrap tokens" >&2
+    exit 1
+  fi
+done
 
 echo "[entrypoint] unwrapping role-id for ${APP_NAME}"
-VAULT_TOKEN="${ROLE_TOKEN}" vault unwrap -field=role_id > "${CRED_DIR}/role-id"
-
+VAULT_TOKEN=$(cat "${WRAP_DIR}/role-id.wrap") vault unwrap -field=role_id > "${CRED_DIR}/role-id"
 echo "[entrypoint] unwrapping secret-id for ${APP_NAME}"
-VAULT_TOKEN="${SECRET_TOKEN}" vault unwrap -field=secret_id > "${CRED_DIR}/secret-id"
-
+VAULT_TOKEN=$(cat "${WRAP_DIR}/secret-id.wrap") vault unwrap -field=secret_id > "${CRED_DIR}/secret-id"
 chmod 0400 "${CRED_DIR}/role-id" "${CRED_DIR}/secret-id"
 
 echo "[entrypoint] starting vault agent for ${APP_NAME}"
-unset VAULT_TOKEN
-exec vault agent -config=/etc/vault-agent/config.hcl
+exec vault agent -config="$(dirname "$0")/${APP_NAME}.hcl"

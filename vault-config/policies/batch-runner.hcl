@@ -1,4 +1,3 @@
-# batch-runner.hcl
 
 path "database/creds/main-readwrite" {
   capabilities = ["read"]

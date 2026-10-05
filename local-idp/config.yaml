@@ -1,22 +1,35 @@
-issuer: http://local-idp:8080
+# Dex, not a minimal fake IdP: the issuer is set here, so Vault and the
+# browser reach the IdP at the same address, whichever node does the
+# server-side token exchange.
+issuer: http://local-idp:5556/dex
 
-users:
-  - username: sre
-    password: srepass
-    email: sre@example.local
-    name: SRE User
-  - username: developer
-    password: devpass
-    email: developer@example.local
-    name: Developer User
+storage:
+  type: memory
 
-clients:
-  - client_id: vault
-    client_secret: vault-secret
-    redirect_uris:
-      - http://localhost:8200/ui/vault/auth/oidc/oidc/callback
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+# One client, Vault, with the vault CLI's callback only: the cluster runs no
+# UI to call back to.
+staticClients:
+  - id: vault
+    name: Vault
+    secret: vault-secret
+    redirectURIs:
       - http://localhost:8250/oidc/callback
-    scopes:
-      - openid
-      - email
-      - profile
+
+# Users log in with their email, which is also the claim the Vault roles
+# name them by: Dex's own sub is an opaque encoding nobody can read.
+enablePasswordDB: true
+staticPasswords:
+  - email: sre@example.local
+    username: sre
+    userID: 0d6a64a2-6b1c-4c0e-9f43-5a1d1b3f2c01
+    hash: "$2a$10$44kL8wtReY0H.JO9wAsiLOa4qC8xjirvI05aiuJKOXlVytYTXnozq"   # srepass
+  - email: developer@example.local
+    username: developer
+    userID: 7a2c1f58-3e4d-4b6a-8c9e-2f0b5d7e9a12
+    hash: "$2a$10$mdAiocxLr9R1VLg84e4fI.sQIqr6Wfdca0IgHhqEnc8IN9zf/8SeC"   # devpass

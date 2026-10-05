@@ -1,6 +1,5 @@
-# api-server.hcl
 
-path "secret/data/api-server/*" {
+path "secret/data/auth-service/*" {
   capabilities = ["read"]
 }
 
