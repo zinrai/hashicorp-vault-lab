@@ -15,7 +15,7 @@ x-postgres: &postgres
   networks: [vault]
 
 # Root, not the vault user: the agent writes the rendered files 0400 for the
-# application, which runs as root too (docs/OVERVIEW.md, simplifications).
+# application, which runs as root too (docs/RATIONALE.md, Lab simplifications).
 x-agent: &agent
   image: hashicorp/vault:2.1.1
   profiles: [apps]

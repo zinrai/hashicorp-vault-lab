@@ -1,443 +1,231 @@
 # Deciding
 
-This document is the reason the lab exists.
+The seven decisions that adopting Vault forces on you, and how to test your
+answers in this lab. Each decision links to its test in
+[EXPLORING](EXPLORING.md) and to this lab's answer in
+[RATIONALE](RATIONALE.md). For unfamiliar words, see [CONCEPTS](CONCEPTS.md).
 
-[CONCEPTS.md](CONCEPTS.md) explains how Vault works. This document is about
-what *you* have to decide for your own environment, which Vault cannot decide
-for you and which no amount of Vault knowledge will settle.
+## How to use this page
 
-Vault's configuration is a mapping of how your organization already decides
-who may reach what. In most organizations that decision is implicit. Adopting
-Vault is, in practice, the work of writing it down for the first time. The
-blocker is usually not missing knowledge but a missing decision, so it cannot
-be fixed by reading more documentation.
+Nothing in normal operation tells you whether these decisions are right. A bad
+subject split produces no error. Every application keeps working, and the
+mistake shows only when something leaks. The lab is a place to find it first.
 
-## How to use this with the lab
-
-**Form a hypothesis on paper before you touch the lab.** The lab answers
-questions you bring to it. Touching it without one produces a lot of
-interesting output and no conclusion.
-
-For each decision below:
+So form your answer before you touch the lab. For each decision:
 
 1. Write down a provisional answer for your environment.
-2. Run the verification path, where one exists.
-3. Change the answer if the observation contradicts it.
+2. Run the test, where the lab has one.
+3. Change the answer if what you see contradicts it.
+4. Compare with this lab's answer. It is one worked answer, not the answer.
 
-Not every decision has a verification path. Some are about your environment
-and the lab has nothing to say about them. That is marked per decision rather
-than papered over.
+Record your answers with their reasons. Test again when the design changes: a
+split that is right for four applications may be wrong for forty.
 
 ## The seven decisions
 
-| # | Decision | What it constrains | Cost to change later | Lab |
-|---|----------|--------------------|----------------------|-----|
-| 1 | What goes into Vault | Which secrets engines you need | Low. Mounts can be added | No |
-| 2 | What counts as one subject | Role count, policy split, revocation unit | **High**. Every application's config and a redeploy | **Yes** |
-| 3 | How subjects authenticate | Whether you must distribute a first credential | Medium. Changing method re-provisions every subject | Partial |
-| 4 | Static or dynamic | Whether Vault needs an account at the target | Low. Migrate one engine at a time | Yes |
-| 5 | TTL | Exposure window, and time you survive a Vault outage | Low. A role update | **Yes** |
-| 6 | Who can change issuance settings | Whether every other control holds | Low to change, but time spent loose does not come back | Partial |
-| 7 | Where unseal trust lives | Whether you can recover at all | **High**. Rebuild of the whole Vault | No, the Vault underneath |
+| # | Decision | Cost to change later | Lab can test |
+|---|----------|----------------------|--------------|
+| 1 | [What goes into Vault](#1-what-goes-into-vault) | Low: add mounts | No |
+| 2 | [What counts as one subject](#2-what-counts-as-one-subject) | **High**: every application's config and a redeploy | **Yes** |
+| 3 | [How subjects authenticate](#3-how-subjects-authenticate) | Medium: re-provision every subject | Partly |
+| 4 | [Static or dynamic](#4-static-or-dynamic) | Low: one engine at a time | Yes |
+| 5 | [TTL](#5-ttl) | Low: a role update | Yes |
+| 6 | [Who can change issuance settings](#6-who-can-change-issuance-settings) | Low, but time spent loose does not come back | Partly |
+| 7 | [Where unseal trust lives](#7-where-unseal-trust-lives) | **High**: rebuild the whole Vault | No |
 
-Spend the time on 2 and 7. Policies can be rewritten later, so do not invest
+Spend your time on 2 and 7. Policies can be rewritten later, so do not invest
 in writing them finely at the start.
-
-Decision 7 is not covered by this lab but by the Vault it runs on. It is
-listed anyway, because skipping it silently is how the most expensive failure
-gets built in.
 
 ## Principles
 
-Five rules to fall back on when an individual decision is unclear.
+Four rules to fall back on when a decision is unclear.
 
-### Granularity comes from subjects, not from policy detail
+**Granularity comes from subjects, not from policy detail.** If three
+applications share one credential, no policy can tell them apart. If the
+subjects are separate, even a coarse policy separates them. The unit you can
+stop during an incident is never finer than the subject split you built in
+advance.
 
-However finely a policy is written, if one credential is shared by three
-applications the granularity is not there. Conversely, if the subjects are
-separate, a coarse policy still separates blast radius.
+**Keep Vault out of the request path.** Issue credentials and certificates
+ahead of time, and do not call Vault to check each request. A Vault outage
+then stops renewal, not service.
 
-The same is true of revocation. **The unit you can stop during an incident is
-never finer than the subject split you built in advance.**
+**The recovery path must not depend on what it protects.** If recovering Vault
+needs something Vault protects, the dependency is circular, and it shows only
+when you need to recover. Ask this of unseal trust, of emergency access, and of
+where the audit log is stored.
 
-### Do not put Vault in the request path
-
-If Vault sits in the verification path, Vault's availability becomes the
-ceiling on the availability of everything behind it. Do that on an operations
-or incident-response path and the tooling disappears at the moment you need
-it.
-
-Put Vault in the *issuance* path only. Issue certificates and tokens ahead of
-time and do not call Vault to verify them. A Vault outage then stops renewal,
-not service.
-
-### The recovery path must not depend on what it protects
-
-If recovering Vault depends on something Vault protects, the dependency is
-circular. It never shows up in normal operation and only appears at the moment
-you most need to recover.
-
-Unseal trust, emergency reachability, audit log storage. Choose each by asking
-whether it works when the protected thing is broken.
-
-### A policy that grants too little fails only when you need it
-
-A policy carries two obligations. It must not reach further than the job
-requires, and it must reach far enough to do the job. **Only the first can be
-settled by reading it.**
-
-A policy that reaches too far is wrong continuously. Every request it should
-not have allowed is in the audit log, and any review of that log finds it.
-
-A policy that does not reach far enough is wrong only at the moment someone
-attempts the operation it was written for. If that operation is routine, the
-gap surfaces on the first working day. If it is incident response, nothing
-attempts it until an incident, and the gap surfaces while you are trying to
-stop a breach.
-
-This lab shipped with four such gaps, all found by running commands rather than
-by reading policies:
-
-| Gap | Consequence |
-|-----|-------------|
-| No policy granted any revocation | Nothing in the lab could stop anything |
-| `sys/leases/lookup` without `sudo` | Leases could not be enumerated |
-| `sys/audit` without `sudo` | Audit devices could not be listed |
-| `pki_int/+` stopping at one segment | PKI roles could not be read |
-
-Twelve applications ran correctly the whole time. Nothing in normal operation
-touches any of those paths.
-
-So every policy needs **one named operation it exists to make possible**, and
-that operation has to be run. Write the operation down beside the policy.
-`sre-admin` exists to inspect, so run the inspection. `incident-response`
-exists to stop things, so revoke something. A policy nobody has exercised is a
-policy nobody has verified, however carefully it was minimized.
-
-`sys/capabilities-self` does not substitute for running it. It answers a
-question about the ACL, not about the request, and in this lab it is wrong in
-both directions:
-
-```sh
-vault login -method=oidc role=developer
-vault write -f sys/capabilities-self paths=pki/cert/ca   # deny
-vault read -field=certificate pki/cert/ca                # -----BEGIN CERTIFICATE-----
-
-vault login -method=oidc role=sre
-vault write -f sys/capabilities-self paths=sys/auth      # [list read]
-vault list sys/auth                                      # permission denied
-```
-
-The first succeeds despite `deny` because PKI CA endpoints are unauthenticated.
-The second fails despite `list` because `sys/auth` is root-protected and the
-token carries no `sudo`. Neither condition is part of the ACL, so neither is
-visible to the thing that reports on the ACL.
-
-### Daily operation does not grade this design
-
-A bad label design makes queries slow. A bad subject split produces nothing at
-all. Everything keeps working. It surfaces only on a leak, which is rare.
-
-Unless you deliberately create a place that grades the design, it stays
-unverified. That is what this lab is for.
+**A policy that grants too little fails only when you need it.** A policy that
+reaches too far is visible by reading it. A policy that falls short is wrong
+only when someone tries the operation it exists for, and if that is incident
+response, you find out during an incident. So give every policy one named
+operation, and run it. `sys/capabilities-self` is no substitute: it reports
+what the ACL grants, not what the request does (see
+[CONCEPTS](CONCEPTS.md#reading-a-path)). `verify.py` runs these operations for
+this lab's policies, under "policies reach far enough".
 
 ## 1. What goes into Vault
 
-**Lab: no verification path.** This is about your environment.
+**Question.** Which secrets are worth moving first?
 
-Not everything needs to go in. Identify what is worth moving first.
+**How to answer.** Name them: "the production database's app user", "the
+payment provider's API key", "the internal CA's private key". If you can only
+answer with categories, you do not yet know your inventory. Then write down
+what you do today when one of them leaks, step by step. The steps that are not
+automated, or depend on someone remembering, are what Vault replaces. The
+mounts you need follow from this list.
 
-Answer with concrete names. "The production DB's app user", "the payment
-SaaS API key", "the internal CA private key". If the answer can be given as an
-abstract category, the actual inventory is not yet known.
+**Test it.** The lab has nothing to say about your inventory.
 
-Then write out what you do *today* when one of them leaks. Change the
-password, find every reference, edit the configs, redeploy in order, confirm
-nothing was missed. Add up the time per step.
-
-Mark the steps that are **not automated** and the steps that **depend on
-someone remembering**. Those are the steps Vault replaces. The rest survive
-adoption unchanged.
-
-The count of mounts you need falls out of this. You do not have to touch every
-secrets engine on day one.
+**This lab's answer.** [RATIONALE 1](RATIONALE.md#1-what-goes-into-vault).
 
 ## 2. What counts as one subject
 
-**Lab: verification path below.** This is the expensive one.
+**Question.** What is one identity to Vault: an application, an application in
+one environment, a team, or a process?
 
-### The option space
+**Options.**
 
-| Split | Revocation unit | Cost |
-|-------|-----------------|------|
-| One subject per application | One application | One credential distribution per application |
-| Per environment x application | One application in one environment | Multiplied by the environment count |
-| Per team | Everything that team runs | Small, but incidents stop the whole team |
-| Per process instance | One process | Distribution scales with instance count, needs an orchestrator |
+| Split | You can stop | Cost |
+|-------|--------------|------|
+| One subject per application | one application | one credential to distribute per application |
+| Per environment and application | one application in one environment | multiplied by the number of environments |
+| Per team | everything the team runs | small, but an incident stops the whole team |
+| Per process instance | one process | grows with instances, needs an orchestrator |
 
-The lab uses one subject per application: twelve applications, twelve AppRole
-roles, each with `token_policies="self-renewal,<app>"`.
+**Test it.**
 
-### Verification path
+- What splitting buys: revoke one application's lease and only its PostgreSQL
+  user is dropped. [Revoke one lease](EXPLORING.md#revoke-one-lease).
+- What a shared template costs: four applications with separate subjects share
+  `main-readwrite`, and one command stops all four.
+  [Revoke by prefix](EXPLORING.md#revoke-by-prefix).
+- What merging costs: make two applications one subject, and their tokens
+  cannot be told apart. [Merge two subjects](EXPLORING.md#5-merge-two-subjects).
+- What each subject costs to run: one more wrap pair to deliver, again after
+  every agent restart. [Restart an agent](EXPLORING.md#restart-an-agent).
 
-**Observe what splitting buys.** Stop one application's credentials and watch a
-neighbour keep running. `api-server` and `payment` are separate subjects.
+**What would change your answer.** If you cannot name two applications where
+"stop A, keep B running" is a real requirement, your split is finer than you
+need. If two applications share a credential template, splitting their
+subjects bought less than it seems.
 
-**Observe what sharing costs.** The lab already shares at a second level:
-`main-readwrite` is used by `api-server`, `auth-service`, `batch-runner`, and
-`webhook-receiver`. One prefix revoke reaches all four, even though their
-subjects are separate.
-
-```sh
-vault login -method=oidc role=incident
-vault list sys/leases/lookup/database/creds/main-readwrite   # four leases
-vault lease revoke -prefix database/creds/main-readwrite
-
-docker exec postgres-main psql -U vault-admin -d postgres \
-  -tAc "select count(*) from pg_roles where rolname like 'v-%'"
-# four roles dropped by one command
-```
-
-Compare with a role used by one application:
-
-```sh
-vault list sys/leases/lookup/database/creds/payment-short    # one lease
-```
-
-**This is the point most easily missed.** Subjects and credential templates are
-two different granularity axes. Splitting subjects does not split blast radius
-if they share a credential template.
-
-**Observe the subject axis itself.** The lab ships with every subject separate,
-so the coarse case has to be constructed. See
-[EXPLORING 8.8](EXPLORING.md#88-merge-two-subjects-granularity-comparison).
-
-Merging `payment` onto `api-server` produces two tokens that are identical in
-every field Vault exposes: same policies, same `meta.role_name`, same
-`display_name`. Enumerating accessors shows two `api-server` rows and no
-`payment` row. **To stop payment you must pick its token out of the two, and
-nothing tells you which one it is.**
-
-The audit log is affected the same way. Merged, `payment` stops appearing
-entirely and its activity is filed under `api-server`.
-
-So the subject split is not only the revocation unit. **It is also the unit of
-attribution.** A coarse split costs you the ability to say afterwards which
-workload did what, which is usually discovered during the incident that needs
-it.
-
-**Measure the cost of splitting.** Each subject needs its own wrap token pair,
-handed over by the deployment (`wrap` in the [README](../README.md#quick-start) here), and each is
-single-use. Restarting an agent
-container is enough to exhaust it
-([EXPLORING 8.2](EXPLORING.md#82-restart-an-agent-container-response-wrap-exhaustion)).
-Every subject you add adds one of these to distribute and re-provision.
-
-### What would change your answer
-
-If you cannot name a pair of applications where "stop A, keep B running" is
-actually required, the split is finer than the requirement and you are paying
-distribution cost for nothing.
-
-If two applications share a credential template, splitting their subjects
-bought less than it looks like. Either split the template too or stop
-pretending they are independent.
+**This lab's answer.** [RATIONALE 2](RATIONALE.md#2-what-counts-as-one-subject).
 
 ## 3. How subjects authenticate
 
-**Lab: partial.** The option space is a paper decision. The operational cost of
-the option the lab chose is observable.
+**Question.** How does each subject prove who it is, and who delivers its
+first credential?
 
-If the platform already vouches for the identity, no first credential has to be
-distributed.
+**Options.** If the platform already vouches for identity, nothing has to be
+delivered.
 
-| Method | Basis of identity | Distribution |
-|--------|-------------------|--------------|
-| Kubernetes | ServiceAccount token | Placed in the pod by K8s. Vault verifies against the K8s API. Invalid once the pod is gone |
-| AWS / GCP / Azure | Instance identity | Vouched for by the provider. Nothing to distribute |
-| cert | Client certificate | Depends on a PKI |
-| AppRole | RoleID + SecretID | **You distribute it** |
+| Method | Identity comes from | Delivery |
+|--------|---------------------|----------|
+| Kubernetes | ServiceAccount token | Kubernetes puts it in the pod |
+| AWS, GCP, Azure | instance identity | the provider vouches |
+| cert | client certificate | depends on a PKI |
+| AppRole | RoleID and SecretID | **you deliver it** |
 
-Where no such platform exists, on-premises or on IaaS VMs, the answer is
-AppRole and the distribution problem is yours.
+On premises or on plain VMs, the answer is usually AppRole, and delivery is
+your problem. Only AppRole runs here. The others are described in
+[Vault's auth methods](https://developer.hashicorp.com/vault/docs/auth).
 
-RoleID can sit in a config file. It cannot log in by itself. SecretID is the
-part that matters, and response wrapping makes interception detectable: the
-recipient's unwrap fails if someone consumed it first. **The act of
-distributing it does not go away.** This is a part Vault does not solve, and it
-stays in the design.
+**Test it.** The running cost of AppRole: a wrap token works once, an agent
+restart spends it, and the only recovery is a new delivery.
+[Reuse a wrap token](EXPLORING.md#reuse-a-wrap-token) and
+[Restart an agent](EXPLORING.md#restart-an-agent).
 
-The lab does exactly this, so the running cost is visible. Wrap tokens are
-single-use, an agent restart burns one, and the only recovery is the deployment
-handing the agent new ones (`wrap` in the [README](../README.md#quick-start)) and
-recreating it. In production that is the orchestrator's job, and it is work
-you are taking on.
+**This lab's answer.**
+[RATIONALE 3](RATIONALE.md#3-how-subjects-authenticate).
 
 ## 4. Static or dynamic
 
-**Lab: observable.**
+**Question.** For each credential, does Vault store it (static) or create it
+on demand (dynamic)?
 
-Decided by where the credential is today and who can read it.
+**How to answer.** If a person sees the value today, dynamic is worth it,
+because then no person ever sees one. If no person touches it, static changes
+little. Dynamic has a cost at the target: Vault needs an account there that can
+create users (for PostgreSQL, one with `CREATE ROLE`). Weigh it per
+credential.
 
-If a human currently sees the value, dynamic is worth it: the point is that no
-human ever sees one. If no human touches it and it is only injected at deploy
-time, static changes nothing about granularity.
+**Test it.** KV returns the same value however often you read it. `verify.py`
+checks this. `database/creds/` returns a new PostgreSQL user on every read.
+[Read credentials by hand](EXPLORING.md#read-credentials-by-hand).
 
-Dynamic costs something at the target. Vault needs an account there that can
-create users. For Postgres that is an account with `CREATE ROLE`, and managing
-that account becomes new work. Weigh it per credential, not once globally.
-
-The two shapes are side by side in the lab. KV returns the same value however
-many times you read it, and reading it needs `role=developer` because
-`sre-admin` deliberately cannot see KV values. `database/creds/*` returns a
-different user each time, and the users appear in `pg_roles`. See
-[EXPLORING 3](EXPLORING.md#3-kv-v2-static-secrets) and
-[EXPLORING 4](EXPLORING.md#4-dynamic-database-credentials-the-headline-feature).
+**This lab's answer.** [RATIONALE 4](RATIONALE.md#4-static-or-dynamic).
 
 ## 5. TTL
 
-**Lab: verification path below.**
+**Question.** How long does each credential live?
 
-The ceiling and the floor are set by different things, and there are **two**
-independent floors.
+**How to answer.** A ceiling and two floors set it.
 
-**Ceiling: the exposure window.** The longest a stolen credential remains
-usable, *if nothing else intervenes*. Read the next paragraph before treating
-revocation as the thing that intervenes.
+- **Ceiling: the exposure window.** The longest a stolen credential stays
+  usable. Revocation does not close a session already open, so the TTL bounds
+  new access, not access in flight.
+- **Floor 1: how long you must survive a Vault outage.** While Vault is down
+  nothing renews, and each credential dies when its TTL runs out.
+- **Floor 2: whether the application survives a new credential.** An
+  application that cannot rebuild its connections cannot run a short TTL. If
+  it reads credentials only at startup, its floor is its restart interval.
 
-**Revocation does not evict an open session.** Verified in this lab: revoking a
-database lease drops the role in Postgres, new connections with it fail
-immediately, and the application keeps serving on its existing pool. Nothing
-tells the pool to reconnect, and the Vault Agent only learns the lease is gone
-at its next renewal attempt.
+**Test it.**
 
-So the credential's TTL is the bound on *drawing new access*, not on access
-already in flight. If the threat model includes an attacker with an established
-connection, the TTL does not bound the damage and the connection has to be
-killed at the target. See
-[EXPLORING 4](EXPLORING.md#4-dynamic-database-credentials-the-headline-feature).
+- Floor 2: replace an application's credential and see whether it carries on
+  without a restart.
+  [Replace a credential](EXPLORING.md#replace-a-credential).
+- Floor 1: stop the Vault and the applications keep serving.
+  [Stop the Vault](EXPLORING.md#8-stop-the-vault).
+- Ceiling: revoke a lease and the application keeps serving on its open
+  connection. [Revoke one lease](EXPLORING.md#revoke-one-lease).
 
-**Floor 1: how long you want to survive a Vault outage.** When Vault is down
-nothing renews, and everything dies as its TTL runs out. Shorter is not better.
-The TTL has to exceed your expected recovery time.
+How often Vault Agent renews or replaces a credential is Agent's own timing,
+described in its
+[template documentation](https://developer.hashicorp.com/vault/docs/agent-and-proxy/agent/template).
 
-**Floor 2: whether the application tolerates rotation.** At `max_ttl` the
-credential is replaced outright. An application that cannot rebuild its
-connection pool on that event cannot run a short TTL, whatever Vault can do.
-
-Floor 2 is the one that gets missed on paper and is obvious in the lab.
-
-### Verification path
-
-**Watch a rotation.** `payment` uses `payment-short`, `default_ttl=10m` and
-`max_ttl=10m`.
-
-```sh
-docker logs -f app-payment | grep rotated
-```
-
-Measured in this lab, the credential turns over about every **7 minutes**, not
-every 10. The agent attempts renewal at roughly 2/3 of the lease, cannot extend
-past `max_ttl`, and re-renders immediately.
-
-**So the interval the application must survive is about 2/3 of `max_ttl`.**
-Size the TTL against that number, not against `max_ttl` itself.
-
-Ask whether your own applications could absorb it. The lab's application
-rebuilds its `pgxpool` on file change. If yours reads credentials once at
-startup, floor 2 is your restart interval, and a short TTL is not available to
-you until that changes.
-
-**Compare against the long end.** `etl` uses `main-long`, `default_ttl=8h`.
-
-**Measure floor 1.** Stop Vault, every one of its nodes, and watch how long
-applications keep working.
-
-```sh
-docker logs -f app-api-server
-# {"msg":"db check ok", ...} keeps appearing
-```
-
-Already-issued credentials stay valid and every application keeps serving.
-**The TTL is literally the time you survive without Vault.**
-
-This stops the whole Vault, not only the lab. Stopping only the active node
-measures something else, a failover. How to stop and restart the nodes depends
-on how your Vault is run; see [EXPLORING 8.1](EXPLORING.md#81-stop-vault).
+**This lab's answer.** [RATIONALE 5](RATIONALE.md#5-ttl).
 
 ## 6. Who can change issuance settings
 
-**Lab: partial.**
+**Question.** Who may write `sys/policies/acl/*` and `auth/*/role/*`?
 
-This means write access to `sys/policies/acl/*` and `auth/*/role/*`. A token
-holding it can, inside its own short TTL, rewrite which policies a role hands
-out. The original token dies and the rewritten role keeps issuing new ones.
-**The whole idea of bounding damage by time collapses at this one point.**
+**Why it matters.** A token with that power can, inside its own short TTL,
+change which policies a role hands out. The token dies and the changed role
+keeps issuing. Bounding damage by time fails at this one point, however
+tightly every other subject is scoped. Vault Community has no permission
+boundary to limit it, so the answer is organizational.
 
-Answer with a person's name, not a team. At small scale it should be one or two
-people. If it is not, the split is too coarse.
+**How to answer.** With a person's name, not a team's. At small scale, one or
+two people. Then decide which auth method gives them that power, at what TTL,
+and where its use is audited.
 
-What this settles: which auth method issues that permission, at what TTL, and
-where its use is audited.
+**Test it.** One version runs here: three roles for people that can look, read
+values, or stop things, and none can change what gets issued. `verify.py`
+checks each of these.
+[People and their roles](EXPLORING.md#2-people-and-their-roles) and
+[Who did what](EXPLORING.md#who-did-what).
 
-This one does not decompose into per-subject minimums. Every other decision
-here can be settled by asking what a given subject needs. This one is a
-property of the whole system: it does not matter how tightly every other
-subject is scoped if one subject can rewrite their roles. Vault Community has
-no permission boundary and no equivalent of an SCP, so there is no technical
-control that bounds it. The answer is organizational, which is why the question
-is who rather than what.
-
-In the lab, the answer is the Vault's operators, by name. They log in as
-themselves, run `vault-config/configure.sh` with their own token, and the
-Vault's audit device records each change. No root token is involved. None of
-the lab's three OIDC roles holds the meta permission at all. Revocation is
-also split away from observation: `sre-admin` can read but not stop anything, and
-`incident-response` can stop things but cannot change what will be issued
-next. See [EXPLORING 2](EXPLORING.md#2-oidc-operator-login-human-authentication).
-
-Whether that separation is right for you is your decision. The lab exists to
-let you see one version of it running.
+**This lab's answer.**
+[RATIONALE 6](RATIONALE.md#6-who-can-change-issuance-settings).
 
 ## 7. Where unseal trust lives
 
-**Out of scope for this lab, answered by the Vault it runs on.** For one
-worked answer, read
-[hashicorp-vault-sandbox](https://github.com/zinrai/hashicorp-vault-sandbox).
+**Question.** What does Vault trust to unseal itself at every start?
 
-It is listed because it is one of the two expensive decisions and skipping it
-silently is how the worst failure gets built in.
+**Why it matters.** Automatic unsealing needs another root of trust, often a
+cloud KMS. If that KMS depends on what Vault protects, the dependency is
+circular: the protected system fails, the KMS stops answering, Vault cannot
+unseal. It never shows in a drill.
 
-Vault needs unsealing at every start. Automating that requires another root of
-trust, usually a cloud KMS. **If that KMS is part of what Vault protects, the
-dependency is circular.**
+**Options.** A separate Vault for Transit auto-unseal, an HSM, or manual
+Shamir unsealing; see
+[Seal/Unseal](https://developer.hashicorp.com/vault/docs/concepts/seal).
+Choose by whether
+[the recovery path depends on what it protects](#principles), not by which is
+fastest. The same applies to emergency access.
 
-> The protected system fails, the KMS stops answering, Vault cannot unseal,
-> the operational credentials are unreachable, the failure cannot be fixed.
+**Test it.** Not in this lab. It belongs to the Vault the lab runs on.
 
-It never appears in a drill. It appears once, at the worst moment.
-
-The alternatives are a separate Vault for Transit auto-unseal, an HSM, or
-accepting manual Shamir unsealing. Choose by whether
-[the recovery path depends on what it protects](#the-recovery-path-must-not-depend-on-what-it-protects),
-not by which is fastest or most automated.
-
-The same applies to emergency reachability. The path used to repair Vault while
-Vault is down cannot be protected by Vault, so it cannot use short-lived
-certificates or tokens. A static credential is acceptable there. Isolate it
-physically and make sure its use is always noticed. A static credential whose
-use is detected is manageable.
-
-## After deciding
-
-**Record the answers as ADRs.** They are decisions with context and
-consequences, not facts. In six months you will need to know why two
-applications were made one subject.
-
-**Compare with this lab's answers.** [RATIONALE.md](RATIONALE.md) records what
-this lab decided and why, decision by decision. It is one worked answer, not
-the answer.
-
-**Re-verify when the design changes.** A subject split that was right for four
-applications may not be right for forty. Nothing in daily operation will tell
-you when it stopped being right.
+**This lab's answer.** [RATIONALE 7](RATIONALE.md#7-where-unseal-trust-lives).

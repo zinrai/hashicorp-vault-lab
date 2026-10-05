@@ -3,9 +3,8 @@
 # Claims, not a snapshot: check-status.sh prints and leaves the reading to
 # you, while every check here is a statement in docs/, so a failure means
 # either the lab drifted or a document is wrong. A policy that grants too
-# little fails silently until someone needs it (docs/DECIDING.md); four such
-# gaps shipped in this lab, all found by running commands, not by reading
-# policies.
+# little fails silently until someone needs it (docs/DECIDING.md, Principles),
+# so the operations a policy exists for are run here, not read from it.
 #
 # Read-only, not exercising issuance: it issues no credentials and revokes
 # nothing, so it can run at any time. Experiments that create or break
@@ -27,6 +26,7 @@ import urllib.request
 from pathlib import Path
 
 LAB = Path(__file__).resolve().parent
+APPS = sorted(p.stem for p in (LAB / "apps").glob("*.yaml"))
 
 
 # Exit 2, not 1: it could not run, which is not a failed claim.
@@ -99,25 +99,48 @@ def lab_containers_running():
     return states.count("running") == 29, states.count("running")
 
 
-# Counted first, not after the other checks: revocation is queued rather
-# than immediate, so a later count would still see leases revoked since.
-#
-# This is also the one check a completed experiment can leave failing.
-# Revoking leases does not heal: the agents are not told, so they never
-# re-request. That is the behaviour docs/DECIDING.md 5 describes, not a
-# fault, so the message says so rather than the check being dropped.
+# Counted first, not after the other checks: it is the claim the revoke
+# experiments in docs/EXPLORING.md change, so their trace shows at the top.
+# The message gives their recovery rather than the check being dropped.
 def main_readwrite_held_by_four():
     _, keys = listing("sys/leases/lookup/database/creds/main-readwrite", INC)
     if len(keys) == 4:
         return True, 4
-    return False, (f"{len(keys)}. If you revoked these, they do not come back until the "
-                   "agents are recreated: wrap (README), then recreate the agents")
+    return False, (f"{len(keys)}. After a revoke experiment, recover as docs/EXPLORING.md "
+                   "says: wrap (README), then recreate the agents")
+
+
+def app_token(name):
+    return run("docker", "exec", f"app-{name}-agent", "cat", "/tmp/token").stdout.strip()
 
 
 def app_token_carries_only_repository_policies():
-    token = run("docker", "exec", "app-api-server-agent", "cat", "/tmp/token").stdout.strip()
-    policies = sorted(lookup_self(token).get("policies", []))
+    policies = sorted(lookup_self(app_token("api-server")).get("policies", []))
     return policies == ["api-server", "self-renewal"], policies
+
+
+# default kept, not left out as on application tokens: people use parts of
+# it that no lab policy declares (docs/RATIONALE.md 6).
+def operator_token_carries_default():
+    policies = sorted(lookup_self(SRE).get("policies", []))
+    return policies == ["default", "sre-admin"], policies
+
+
+# Every role read, not one as a sample: a subject merged by hand in
+# docs/EXPLORING.md and not restored must fail here. A fixed 12, not only
+# the count of apps/: a missing file must fail too.
+def one_approle_role_per_application():
+    _, roles = listing("auth/approle/role", SRE)
+    if len(APPS) != 12 or sorted(roles) != APPS:
+        return False, roles
+    wrong = []
+    for name in APPS:
+        data = vault("GET", f"auth/approle/role/{name}", SRE)[1].get("data", {})
+        shape = (sorted(data.get("token_policies", [])), data.get("token_no_default_policy"),
+                 data.get("token_ttl"), data.get("token_max_ttl"))
+        if shape != (sorted([name, "self-renewal"]), True, 1200, 7200):
+            wrong.append(f"{name}: {shape}")
+    return not wrong, wrong or len(APPS)
 
 
 def token_ttl(token, seconds):
@@ -171,6 +194,57 @@ def incident_revokes_by_prefix():
     return "sudo" in caps, caps
 
 
+# The application's own token, not a person's: a mount is the boundary
+# between applications (docs/RATIONALE.md 1).
+def app_token_cannot_reach_another_mount():
+    return denied(app_token("api-server"), "GET", "secret-internal/data/internal-cms/config")
+
+
+# The ACL, not a read: a read that was allowed would create a PostgreSQL
+# user. A denial in the ACL is final, so here capabilities-self is enough.
+def cannot_issue_database_credentials(token):
+    caps = capabilities(token, "database/creds/main-short")
+    return not {"read", "create", "update"} & set(caps), caps
+
+
+# Seconds, not durations like 1h: the API answers in seconds.
+# (database, default_ttl, max_ttl) per role, as docs/ARCHITECTURE.md lists them.
+DATABASE_ROLES = {
+    "main-readonly": ("postgres-main", 3600, 86400),
+    "main-readwrite": ("postgres-main", 3600, 86400),
+    "main-short": ("postgres-main", 900, 900),
+    "main-long": ("postgres-main", 28800, 86400),
+    "payment-short": ("postgres-payment", 600, 600),
+    "analytics-readonly": ("postgres-analytics", 3600, 86400),
+    "analytics-readwrite": ("postgres-analytics", 3600, 86400),
+    "analytics-long": ("postgres-analytics", 28800, 86400),
+    "internal-readwrite": ("postgres-internal", 3600, 86400),
+}
+
+
+def database_roles_as_documented():
+    _, roles = listing("database/roles", SRE)
+    if sorted(roles) != sorted(DATABASE_ROLES):
+        return False, roles
+    wrong = []
+    for role, want in DATABASE_ROLES.items():
+        data = vault("GET", f"database/roles/{role}", SRE)[1].get("data", {})
+        got = (data.get("db_name"), data.get("default_ttl"), data.get("max_ttl"))
+        if got != want:
+            wrong.append(f"{role}: {got}")
+    return not wrong, wrong or len(roles)
+
+
+# Without a token, not with one: the CA endpoint answers anyone, while
+# capabilities-self reports what the ACL grants, so the two disagree
+# (docs/CONCEPTS.md, Reading a path).
+def ca_readable_without_a_token():
+    status, body = vault("GET", "pki/cert/ca")
+    caps = capabilities(DEV, "pki/cert/ca")
+    found = "BEGIN CERTIFICATE" in body.get("data", {}).get("certificate", "")
+    return status == 200 and found and caps == ["deny"], f"status {status}, developer acl {caps}"
+
+
 def kv_returns_the_same_value_twice():
     first = vault("GET", "secret/data/api-server/config", DEV)[1].get("data", {}).get("data")
     second = vault("GET", "secret/data/api-server/config", DEV)[1].get("data", {}).get("data")
@@ -180,8 +254,8 @@ def kv_returns_the_same_value_twice():
 # Reading database/creds is deliberately not checked here. Every read creates a
 # real Postgres user and a real lease, which makes this script mutate the thing
 # it is verifying and makes the lease count above unreliable. The claim that
-# each read returns a new user is demonstrated in docs/CONCEPTS.md and exercised
-# in docs/EXPLORING.md 4, where creating credentials is the point.
+# each read returns a new user is exercised in docs/EXPLORING.md 4 (Read
+# credentials by hand), where creating them is the point.
 
 
 # openssl, not Python: the standard library cannot verify a chain it is
@@ -226,6 +300,14 @@ CHECKS = [
         ("SRE token ttl 28800s", lambda: token_ttl(SRE, 28800)),
         ("DEV token ttl 28800s", lambda: token_ttl(DEV, 28800)),
         ("INC token ttl 1800s", lambda: token_ttl(INC, 1800)),
+        ("operator token carries default", operator_token_carries_default),
+    ]),
+    ("one subject per application (DECIDING 2)", [
+        ("one AppRole role per application, 20m up to 2h", one_approle_role_per_application),
+        ("app token cannot reach another mount", app_token_cannot_reach_another_mount),
+    ]),
+    ("credential TTLs (DECIDING 5)", [
+        ("database roles as documented", database_roles_as_documented),
     ]),
     ("three tiers of operator authority (DECIDING 6)", [
         ("developer reads KV values", developer_reads_kv_values),
@@ -238,17 +320,21 @@ CHECKS = [
         ("developer cannot change what gets issued", lambda: cannot_change_what_gets_issued(DEV)),
         ("sre cannot change what gets issued", lambda: cannot_change_what_gets_issued(SRE)),
         ("incident cannot change what gets issued", lambda: cannot_change_what_gets_issued(INC)),
+        ("developer cannot issue database credentials", lambda: cannot_issue_database_credentials(DEV)),
+        ("sre cannot issue database credentials", lambda: cannot_issue_database_credentials(SRE)),
+        ("incident cannot issue database credentials", lambda: cannot_issue_database_credentials(INC)),
     ]),
-    ("policies reach far enough (DECIDING principle)", [
+    ("policies reach far enough (DECIDING, Principles)", [
         ("sre can list audit devices", sre_lists_audit_devices),
         ("sre can read a pki role", sre_reads_a_pki_role),
         ("incident can enumerate leases", incident_enumerates_leases),
         ("incident can revoke by prefix", incident_revokes_by_prefix),
+        ("CA readable without a token, though the ACL denies it", ca_readable_without_a_token),
     ]),
     ("static secrets (DECIDING 4)", [
         ("KV returns the same value twice", kv_returns_the_same_value_twice),
     ]),
-    ("pki chain (RATIONALE: PKI as two tiers)", [
+    ("pki chain (RATIONALE 1)", [
         ("leaf verifies to the root through the intermediate", leaf_verifies_through_the_intermediate),
     ]),
     ("audit", [
